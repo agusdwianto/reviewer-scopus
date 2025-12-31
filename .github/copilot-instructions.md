@@ -1,65 +1,78 @@
 # Copilot / AI Agent Instructions for reviewer-scopus 🔧
 
 Purpose
-- Short: help an AI coding agent be immediately productive with this repository — a single-file Streamlit app (`review.py`) that runs a manuscript reviewer using Gemini/Google generative APIs.
+- Short: get an AI coding agent productive quickly — this repo is a single-file Streamlit app (`review.py`) that runs a manuscript reviewer using Google Generative AI (Gemini).
 
 Quick start (local / devcontainer) ⚡
-- Devcontainer: this repository auto-runs Streamlit on attach. See `.devcontainer/devcontainer.json` `postAttachCommand` (runs `streamlit run review.py --server.enableCORS false --server.enableXsrfProtection false`). Port 8501 is forwarded.
-- Local: install deps and run the app:
-  - pip install -r requirements.txt
-  - streamlit run review.py
+- Devcontainer: attaches and auto-runs Streamlit. See `.devcontainer/devcontainer.json` postAttachCommand:
+  ```sh
+  streamlit run review.py --server.enableCORS false --server.enableXsrfProtection false
+  ```
+  App is available at port 8501 (forwarded by devcontainer).
+- Local run:
+  ```sh
+  pip install -r requirements.txt
+  streamlit run review.py --server.enableCORS false --server.enableXsrfProtection false
+  ```
 
-High-level architecture & major components 🏗️
-- Single-page Streamlit app: `review.py` is the entire application.
-  - UI: Streamlit controls, `st.sidebar` for model selection and `st.file_uploader` for manuscripts.
-  - Extraction: `extract_text(file)` supports `.docx` (python-docx) and `.pdf` (PyPDF2).
-  - Analysis: uses `google-generativeai` (`genai.configure` + `genai.GenerativeModel('gemini-1.5-pro')`) and builds a long `full_prompt` (language set to Bahasa Indonesia by default). The prompt is explicitly truncated to the first ~20k chars of the manuscript.
-  - Output & report: response is shown in multiple tabs and can be exported via `generate_pdf_report()` (FPDF, latin-1 encoding). `st.download_button` serves the generated PDF.
+High-level architecture & key files 🏗️
+- `review.py` (single-file app):
+  - extract_text(file): handles `.docx` (python-docx) and `.pdf` (PyPDF2). Note: PDF pages may return None for images-only pages — add guards.
+  - generate_pdf_report(content): uses `FPDF` (from the `fpdf2` package) and encodes text with `latin-1` (may drop Unicode characters).
+  - Analysis flow: `genai.configure(api_key=...)` then `genai.GenerativeModel('gemini-1.5-pro')` followed by `model.generate_content(full_prompt).text`.
+  - Prompt specifics: language default is **Bahasa Indonesia** and the prompt is truncated with `text_content[:20000]` before sending to the model. The UI preview truncates the response with `response[:1000]`.
+- `requirements.txt`: dependency source of truth.
+- `.devcontainer/devcontainer.json`: shows how environment runs automatically at attach.
 
-Project-specific conventions & patterns ✅
-- Prompts are long, structured, and numbered; expect the app to ask for: score, novelty, methods, citations, section-wise feedback, final verdict.
-- The displayed preview truncates the response (`response[:1000]...`) while tab 2 shows the full text.
-- UI assumes Bahasa Indonesia formal academic language for feedback — preserve that unless intentionally changing the UX.
-- `ai_model` selectbox exists but the integration currently always uses Gemini (`gemini-1.5-pro`) — an agent changing models should update the call-site accordingly.
+Project-specific patterns & gotchas ✅
+- Long, structured prompts: the app expects a numbered output (SUMMARY SCORE, NOVELTY, METHODS, CITATION QUALITY, SECTION-WISE FEEDBACK, FINAL VERDICT).
+- Truncation points are intentional and must be updated if you change prompt size: see `{text_content[:20000]}` in `review.py`.
+- The `ai_model` selectbox exists in the sidebar but is not used — updating model behavior requires changing the `model = genai.GenerativeModel(...)` line to use `ai_model` (map UI label -> actual model id).
+- There was previously a hard-coded API key: **do not commit secrets**.
+- `openai` is imported but unused; remove or integrate it intentionally.
 
-Security & secret handling ⚠️
-- Current code contains a hard-coded API key: `GEMINI_API_KEY = "AIzaSyB..."`. **Do not commit keys**. Replace with an env var (example):
+Security & environment variables ⚠️
+- The app now reads these env vars (set them in Codespaces/Devcontainer or CI):
+  - `GEMINI_API_KEY` - required for calling the Google Generative AI API. If missing, analysis is disabled and the UI shows a helpful message.
+  - `ADMIN_PASSWORD` - (optional) password to protect the reviewer admin dashboard (export reviewers).
+  - `REVIEWERS_DB` - (optional) path to the SQLite DB file (defaults to `data/reviewers.db`).
 
-```py
-import os
-GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
-if not GEMINI_API_KEY:
-    raise RuntimeError('GEMINI_API_KEY env var required')
+Example (in shell):
+
+```bash
+export GEMINI_API_KEY='sk-...'
+export ADMIN_PASSWORD='s3cr3t'
+export REVIEWERS_DB='data/reviewers.db'
 ```
 
-- Use Codespaces/Devcontainer secrets or CI secrets for protected environments.
+- Use Codespaces/Devcontainer secrets or CI repo secrets for deployment and CI.
 
-Files to look at first 🔎
-- `review.py` — primary source of truth (prompt logic, IO, UI layout)
-- `requirements.txt` — dependencies to update when adding libs
-- `.devcontainer/devcontainer.json` — how the environment is launched (auto-run Streamlit)
-- `README.md` — short project description
+Testing suggestions (concrete) 🧪
+- Unit tests:
+  - `tests/test_extract_text.py`: fixture `tests/fixtures/sample.pdf` and `sample.docx`, test empty-file and images-only PDF behavior.
+  - `tests/test_generate_pdf_report.py`: ensure returned value is `bytes` and that encoding doesn't crash on common inputs.
+- Integration smoke test:
+  - Use `pytest` with `monkeypatch` or `responses` to mock `genai.GenerativeModel` so the full Streamlit flow runs without calling external APIs.
 
-Testing & small tasks that are straightforward to automate 🧪
-- Unit-test `extract_text()` for both sample PDF and DOCX files (create `tests/fixtures/sample.pdf` and `.docx`). Ensure edge cases (empty file, images-only PDF) are handled gracefully.
-- Unit-test `generate_pdf_report()` returns bytes and that `latin-1` encoding doesn't crash for basic Unicode inputs.
-- Add a simple integration smoke test that runs the Streamlit script with a small fixture and ensures the analysis path is exercised (mock external API calls).
+PR checklist for agents 📝
+- Remove hard-coded secrets; fail-fast if env var missing.
+- Add/update tests for any changed behavior and include fixtures.
+- Update `requirements.txt` for new dependencies.
+- Preserve the Bahasa Indonesia default unless intentionally changing UX language.
+- Document prompt/format changes in `README.md` and this file.
 
-Operator / Debugging tips 🐞
-- Streamlit logs and exceptions are visible in the terminal where `streamlit run` is executed.
-- Devcontainer auto-starts Streamlit; to reproduce the same behavior locally, use the same flags shown in `.devcontainer/devcontainer.json`.
-- Check for unused imports (e.g. `openai` appears unused) and remove or use intentionally.
+Useful pointers (where to look) 🔎
+- Prompt truncation: `review.py` -> `full_prompt` -> `{text_content[:20000]}`
+- Secret location: `review.py` -> `GEMINI_API_KEY = "..."`
+- Model binding: `review.py` -> `model = genai.GenerativeModel('gemini-1.5-pro')`
+- Devcontainer auto-run: `.devcontainer/devcontainer.json` -> `postAttachCommand` (Streamlit command)
 
-PR checklist for agents (quick) 📝
-- No secrets committed
-- Add/update tests for behavior you modify
-- Update `requirements.txt` for any new dependency
-- Keep default UX (Bahasa Indonesia) unless explicitly changing language
-- Document any prompt/format changes in `README.md` or this file
+Notes & improvements to consider 💡
+- Consider switching PDF generation from `FPDF` (latin-1) to a Unicode-friendly library if reports must preserve non-Latin characters.
+- Add input validation for `extract_text()` to ignore None pages and to handle large files gracefully (stream or early truncation).
 
-Examples (concrete pointers inside the repository) 📌
-- Where to change prompt truncation: inside `review.py` in the block that builds `full_prompt` (it uses `{text_content[:20000]}`).
-- Where to fix secrets: replace `GEMINI_API_KEY = "..."` with environment var access.
-- Where the app binds to the model: `model = genai.GenerativeModel('gemini-1.5-pro')` in `review.py`.
+If you'd like, I can:
+- Open a PR that removes the hard-coded key and adds env-var validation + tests ✅
+- Add test templates and example fixtures ✅
 
-If anything is unclear or you want me to expand a section (e.g., add test templates, provide a secrets-removal patch, or implement env var usage + tests), tell me which area to focus on and I will iterate. 🙌
+Tell me which follow-up you prefer or which sections need more detail and I will iterate. 🙌
