@@ -14,13 +14,18 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- SIDEBAR: PENGATURAN API ---
+# --- KONFIGURASI API PERMANEN ---
+# Masukkan API Key Anda di sini agar tidak perlu mengetik lagi
+GEMINI_API_KEY = "MASUKKAN_API_KEY_GEMINI_ANDA_DISINI"
+
+# --- SIDEBAR: PENGATURAN AI ---
 with st.sidebar:
     st.title("⚙️ Konfigurasi AI")
     ai_choice = st.selectbox("Pilih Model AI:", ["Gemini Pro (Google)", "GPT-4 (OpenAI)", "DeepSeek V3"])
     
-    st.info("Masukkan API Key sesuai model yang dipilih:")
-    api_key_input = st.text_input("API Key:", type="password")
+    st.info("Kunci API Gemini sudah terpasang otomatis.")
+    # Jika menggunakan model lain, input manual tetap disediakan
+    manual_api_key = st.text_input("API Key (untuk GPT-4/DeepSeek):", type="password")
 
 # --- FUNGSI EKSTRAKSI ---
 def extract_text(file):
@@ -35,6 +40,7 @@ def extract_text(file):
 # --- UI UTAMA ---
 st.title("🔬 Advanced Multi-AI Article Reviewer")
 st.write("Reviewer otomatis standar Scopus menggunakan model AI terbaik dunia.")
+st.write(f"Domain aktif: **analysisidata.co.id**")
 
 uploaded_file = st.file_uploader("Upload Dokumen (PDF/Docx)", type=["pdf", "docx"])
 
@@ -42,20 +48,23 @@ if uploaded_file:
     text = extract_text(uploaded_file)
     
     if st.button("🚀 Jalankan Review Mendalam"):
-        if not api_key_input:
-            st.error("Silakan masukkan API Key di sidebar terlebih dahulu!")
+        # Menentukan API Key mana yang dipakai
+        current_key = GEMINI_API_KEY if ai_choice == "Gemini Pro (Google)" else manual_api_key
+        
+        if not current_key or current_key == "MASUKKAN_API_KEY_GEMINI_ANDA_DISINI":
+            st.error("API Key belum disetting dengan benar!")
         else:
             with st.spinner(f"Sedang menganalisis menggunakan {ai_choice}..."):
                 prompt = f"Bertindaklah sebagai Reviewer Senior Jurnal Scopus Q1. Berikan laporan detail (Skor 1-100, Kekuatan, Kelemahan, dan Saran Perbaikan) untuk artikel ini:\n\n{text[:15000]}"
                 
                 try:
                     if ai_choice == "Gemini Pro (Google)":
-                        genai.configure(api_key=api_key_input)
+                        genai.configure(api_key=current_key)
                         model = genai.GenerativeModel('gemini-1.5-flash')
                         response = model.generate_content(prompt).text
                     
                     elif ai_choice == "GPT-4 (OpenAI)":
-                        client = openai.OpenAI(api_key=api_key_input)
+                        client = openai.OpenAI(api_key=current_key)
                         res = client.chat.completions.create(
                             model="gpt-4",
                             messages=[{"role": "user", "content": prompt}]
@@ -63,7 +72,7 @@ if uploaded_file:
                         response = res.choices[0].message.content
                         
                     elif ai_choice == "DeepSeek V3":
-                        client = openai.OpenAI(api_key=api_key_input, base_url="https://api.deepseek.com")
+                        client = openai.OpenAI(api_key=current_key, base_url="https://api.deepseek.com")
                         res = client.chat.completions.create(
                             model="deepseek-chat",
                             messages=[{"role": "user", "content": prompt}]
