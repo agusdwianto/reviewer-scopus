@@ -3,7 +3,6 @@ import streamlit as st
 import google.generativeai as genai
 from docx import Document
 import PyPDF2
-from fpdf import FPDF
 import pandas as pd
 import datetime
 
@@ -17,9 +16,17 @@ DB_PATH = os.environ.get('REVIEWERS_DB', 'data/reviewers.db')
 init_db(DB_PATH)
 
 # GEMINI API key via env var (do NOT commit secrets)
+# For public deployments, set GEMINI_API_KEY in the server environment or use the admin runtime key (session-only).
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
 # Admin password (optional) configured via ADMIN_PASSWORD env var
 ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD')
+# Allow public (no per-user API key prompts). Set to 'false' to require admin-only access.
+ALLOW_PUBLIC = os.environ.get('ALLOW_PUBLIC', 'true').lower() == 'true'
+
+
+def get_api_key():
+    """Return runtime key (set by admin in session) or environment key if available."""
+    return st.session_state.get('runtime_gemini_key') or os.environ.get('GEMINI_API_KEY')
 
 
 # UI Enhancement
@@ -32,7 +39,10 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 # --- API SETUP ---
-GEMINI_API_KEY = "AIzaSyBv1Fyfhxhxg7hCe2kcaxzr_YeAwmZDYu4"
+# Do NOT hard-code the GEMINI API key here. It should be provided via the
+# environment variable `GEMINI_API_KEY` or set at runtime by an admin in the
+# sidebar (stored only for the session).
+# The effective key used for analysis is returned by `get_api_key()`.
 
 # --- SIDEBAR ---
 if 'authenticated' not in st.session_state:
@@ -74,33 +84,37 @@ with st.sidebar:
             st.download_button('Download CSV', csv_bytes, 'reviewers.csv', 'text/csv')
         reviewers = list_reviewers(DB_PATH)
         st.write(f'Count: {len(reviewers)}')
+
+        with st.expander('Admin: Configure Service'):
+            st.write('Runtime key is stored only for the active server session and not persisted.')
+            env_status = 'set' if os.environ.get('GEMINI_API_KEY') else 'not set'
+            st.write(f'Env GEMINI_API_KEY: {env_status}')
+            key_input = st.text_input('Set runtime Gemini API key (runtime only)', type='password', key='admin_runtime_key')
+            if st.button('Set Runtime Key', key='set_runtime_key'):
+                if key_input.strip():
+                    st.session_state['runtime_gemini_key'] = key_input.strip()
+                    st.success('Runtime key set for this session')
+            if st.session_state.get('runtime_gemini_key'):
+                if st.button('Clear Runtime Key', key='clear_runtime_key'):
+                    st.session_state.pop('runtime_gemini_key', None)
+                    st.success('Runtime key cleared')
+
+            # Allow public toggle (session-only)
+            public_toggle = st.checkbox('Allow public access (no API key entry by users)', value=ALLOW_PUBLIC, key='allow_public')
+            st.write('Public mode:', 'Enabled' if public_toggle else 'Disabled')
+            st.write('Tip: For production, set `GEMINI_API_KEY` as an environment variable on the server and use `ADMIN_PASSWORD` to protect admin actions.')
+
     else:
         st.info('Need an account? Register first on the main page.')
 
     ai_model = st.selectbox('Select Intelligence Engine:', ['Gemini 1.5 Pro (Ultra Precision)', 'GPT-4 Turbo'])
 
-# --- FUNCTIONS ---
-def extract_text(file):
-    if file.name.endswith('.docx'):
-        return "\n".join([p.text for p in Document(file).paragraphs])
-    elif file.name.endswith('.pdf'):
-        return "\n".join([page.extract_text() for page in PyPDF2.PdfReader(file).pages])
-    return ""
+# --- FUNCTIONS (moved to utils) ---
+from utils import extract_text, file_too_large, generate_pdf_report
 
-def generate_pdf_report(content, user_name: str = None):
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_font("Arial", 'B', 16)
-    pdf.cell(0, 10, "MANUSCRIPT ASSESSMENT REPORT", ln=True, align='C')
-    pdf.set_font("Arial", size=10)
-    header = "Standard: Scopus/Web of Science Q1 Quality"
-    if user_name:
-        header = f"Prepared for: {user_name} | {header}"
-    pdf.cell(0, 10, header, ln=True, align='C')
-    pdf.ln(10)
-    pdf.set_font("Arial", size=11)
-    pdf.multi_cell(0, 8, txt=content.encode('latin-1', 'ignore').decode('latin-1'))
-    return pdf.output(dest='S').encode('latin-1')
+# NOTE: `generate_pdf_report` moved to `utils.py` to isolate the `fpdf` dependency
+# and make it import-safe (so importing modules that depend on this package
+# doesn't fail when `fpdf` is not installed). See `utils.generate_pdf_report`.
 
 # --- MAIN INTERFACE ---
 # Registration flow: users must register before using the review tool
@@ -138,9 +152,10 @@ else:
         text_content = extract_text(uploaded_file)
         
         if st.button("START COMPREHENSIVE REVIEW"):
-            # Check API key availability
-            if not GEMINI_API_KEY:
-                st.error('Analysis is disabled: GEMINI_API_KEY is not set. Contact admin to configure the server environment variable.')
+            # Check API key availability (runtime key overrides env var)
+            api_key = get_api_key()
+            if not api_key:
+                st.error('Analysis is disabled: GEMINI_API_KEY (env or runtime) is not set. Contact admin to configure the server environment variable or set a runtime key.')
             else:
                 with st.spinner("Executing multi-dimensional analysis..."):
                     # Prompt yang jauh lebih teknis dan detail
@@ -162,22 +177,28 @@ else:
                     """
                     
                     try:
-                        genai.configure(api_key=GEMINI_API_KEY)
+                        # Compute simple deterministic scores based on manuscript content
+                        from scoring import score_manuscript
+                        scores = score_manuscript(text_content)
+
+                        genai.configure(api_key=api_key)
                         model = genai.GenerativeModel('gemini-1.5-pro')
                         response = model.generate_content(full_prompt).text
                         
                         # --- DISPLAY RESULTS (DASHBOARD STYLE) ---
                         st.markdown("---")
                         m1, m2, m3 = st.columns(3)
-                        m1.metric("Overall Quality Score", "88/100", "+5% vs Avg")
-                        m2.metric("Novelty Index", "High", "Q1 Standard")
-                        m3.metric("Language Precision", "Excellent", "Academic")
+                        m1.metric("Total Score", f"{scores['Total']}/100")
+                        m2.metric("Novelty", f"{scores['Originality']}/20")
+                        m3.metric("Methodology", f"{scores['Methodology']}/20")
 
-                        # Tabs for organized view (Seperti review-it.ai)
+                        # Tabs for organized view
                         tab1, tab2, tab3 = st.tabs(["📊 Executive Summary", "🔍 Deep Analysis", "📝 Revision Guide"])
                         
                         with tab1:
                             st.markdown(f"<div class='report-card'>{response[:1000]}...</div>", unsafe_allow_html=True)
+                            st.markdown("**Score breakdown**")
+                            st.write({k: v for k, v in scores.items() if k != 'Total'})
                         
                         with tab2:
                             st.write(response)
@@ -187,7 +208,7 @@ else:
 
                         # DOWNLOAD SECTION
                         st.markdown("### 🖨️ Export Official Report")
-                        pdf_bytes = generate_pdf_report(response, st.session_state.get('user_name'))
+                        pdf_bytes = generate_pdf_report(response, st.session_state.get('user_name'), scores=scores)
                         st.download_button(
                             label="Download Professional Review Report (PDF)",
                             data=pdf_bytes,
